@@ -27,22 +27,33 @@ class ChatRequest(BaseModel):
     text: str
     answers: dict | None = None
 
-# --- NEW: Function to detect technical questions ---
+# --- Function to detect technical questions ---
 def is_technical_question(text: str):
     """A simple check for keywords to decide if a question is technical."""
-    technical_keywords = ["python", "code", "llm", "api", "prompt", "programming", "function", "script", "app", "error"]
+    technical_keywords = [
+        "python", "code", "javascript", "java", "c++", "html", "css", 
+        "llm", "api", "prompt", "programming", "function", "script", "app", 
+        "error", "bug", "debug", "install", "library", "framework", "algorithm",
+        "data structure", "binary search", "3sum", "react", "fastapi"
+    ]
     return any(keyword in text.lower() for keyword in technical_keywords)
 
-# --- Groq API Connector (No changes here) ---
-async def ask_groq(prompt: str):
+# --- Groq API Connector ---
+async def ask_groq(prompt: str, system_prompt: str = None):
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="Groq API key not configured on the server.")
     
     api_url = "https://api.groq.com/openai/v1/chat/completions"
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [{"role": "user", "content": prompt}]
-    }
+    
+    if system_prompt is None:
+        system_prompt = "You are a helpful assistant. Answer questions concisely."
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+    
+    payload = {"model": "llama-3.1-8b-instant", "messages": messages}
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
     async with httpx.AsyncClient(timeout=30) as client:
@@ -59,34 +70,29 @@ async def ask_groq(prompt: str):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-# --- Main Chat Endpoint (Completely updated logic) ---
+# --- Main Chat Endpoint (Final Hybrid Logic) ---
 @app.post("/chat")
 async def chat(req: ChatRequest):
     sid = req.session_id
     session = SESSIONS.setdefault(sid, {})
 
-    # --- THIS IS THE NEW "SMART" LOGIC ---
-    
-    # If this is the first message of a conversation, decide if it's technical
+    # If this is the first message of a conversation, decide its type
     if "is_technical" not in session:
         session["is_technical"] = is_technical_question(req.text)
         session["original_question"] = req.text
 
     # --- PATH 1: General Conversation ---
     if not session["is_technical"]:
-        prompt = f"You are a helpful assistant. Answer the user's question directly and concisely. User question: {session['original_question']}"
-        answer = await ask_groq(prompt)
-        SESSIONS.pop(sid, None)  # End session
+        answer = await ask_groq(session['original_question'])
+        SESSIONS.pop(sid, None)  # End session after one answer
         return {"type": "answer", "answer": answer}
 
     # --- PATH 2: Technical Conversation ---
     else:
         if not session.get("clarified"):
-            # If we have the answers, update the session
             if req.answers:
                 session.update(req.answers)
                 session["clarified"] = True
-            # Otherwise, ask the clarifying questions
             else:
                 return {
                     "type": "clarify",
@@ -96,23 +102,23 @@ async def chat(req: ChatRequest):
                     ]
                 }
         
-        # Once we have the context, build the detailed prompt
         original_question = session.get("original_question", "No question found.")
         use_case = session.get("use_case", "general")
         skill_level = session.get("skill_level", "beginner")
 
-        prompt = f"""
-User question: {original_question}
-Use-case: {use_case}
-Skill-level: {skill_level}
+        system_prompt = "You are an expert prompt engineering tutor and Python developer."
+        detailed_prompt = f"""
+        User's original question: "{original_question}"
+        Their use-case is: "{use_case}"
+        Their skill-level is: "{skill_level}"
 
-You are a prompt engineering tutor. Answer in three parts:
-1. A clear explanation of the concept, tailored to the user's skill level.
-2. A minimal, correct Python code example.
-3. Tips on how to write better prompts related to this topic.
-"""
-        answer = await ask_groq(prompt)
+        Please provide an answer tailored to these needs. Structure your response in three distinct parts:
+        1. **Clear Explanation:** Explain the core concept in a way that is appropriate for their skill level.
+        2. **Minimal Python Example:** Provide a clear, correct, and minimal Python code snippet that demonstrates the concept.
+        3. **Prompt Improvement Tips:** Give 2-3 specific tips on how the user could write a better prompt to get this kind of answer in the future.
+        """
+        answer = await ask_groq(detailed_prompt, system_prompt)
         
-        SESSIONS.pop(sid, None) # End session
+        SESSIONS.pop(sid, None)
         return {"type": "answer", "answer": answer}
 

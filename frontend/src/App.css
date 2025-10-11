@@ -170,6 +170,9 @@ body {
   background: rgba(255, 255, 255, 0.8);
   backdrop-filter: blur(10px);
   border-top: 1px solid rgba(0, 0, 0, 0.1);
+  max-width: 948px; /* max-width of form + padding */
+  margin: 0 auto;
+  width: 100%;
 }
 
 .chat-input-form {
@@ -228,6 +231,73 @@ body {
   transform: none;
 }
 
+/* --- NEW: Suggestions Bar Styles --- */
+.suggestions-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    max-width: 900px;
+    margin: 0 auto 12px;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border: 2px solid #fbbf24;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(251, 191, 36, 0.2);
+}
+
+.suggestion-header {
+    font-size: 14px;
+    font-weight: 700;
+    color: #92400e;
+    margin-bottom: 4px;
+}
+
+.suggestion-item {
+    padding: 12px 16px;
+    background: white;
+    border: 1px solid #fbbf24;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.suggestion-item:hover {
+    background: #fffbeb;
+    border-color: #f59e0b;
+    transform: translateX(4px);
+    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.3);
+}
+
+.suggestion-text {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1f2937;
+    margin-bottom: 6px;
+}
+
+.suggestion-change {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.original-word {
+    color: #dc2626;
+    text-decoration: line-through;
+    font-weight: 500;
+}
+
+.arrow {
+    color: #6b7280;
+}
+
+.corrected-word {
+    color: #059669;
+    font-weight: 600;
+}
+
+
 /* Animations */
 @keyframes fadeIn {
   from {
@@ -274,4 +344,82 @@ body {
   .send-button {
     padding: 14px 20px;
   }
+}
+
+/* Voice button */
+.mic-button {
+  margin: 0 8px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: none;
+  background: #eef2ff;
+  color: #333;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.mic-button:hover { background: #e0e7ff; }
+.mic-button.listening {
+  background: #fde68a;
+  animation: pulseMic 1s infinite;
+}
+@keyframes pulseMic {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .5); }
+  70% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+/* Section Separation Styling - Pure CSS */
+.message.bot p {
+  line-height: 1.8;
+}
+
+/* Visual separation for parts using pseudo-elements */
+.message.bot {
+  background: linear-gradient(to bottom, 
+    white 0%, 
+    white 100%);
+  padding: 20px;
+  position: relative;
+}
+
+/* Add visual dividers between sections */
+.message.bot::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 4px 0 0 4px;
+}
+
+/* Better spacing and typography for technical content */
+.message.bot p {
+  margin: 0;
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+/* Style for code blocks if present */
+.message.bot code {
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  color: #dc2626;
+}
+
+/* Pre-formatted text blocks */
+.message.bot pre {
+  background: #1f2937;
+  color: #f3f4f6;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 12px 0;
+  border-left: 4px solid #667eea;
 }
