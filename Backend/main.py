@@ -1,9 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import httpx
 from dotenv import load_dotenv
+import asyncio
+from sentence_transformers import CrossEncoder
 
 load_dotenv()
 app = FastAPI()
@@ -17,9 +19,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- API Key and Session Storage ---
+# --- API Keys and Session Storage ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY")
 SESSIONS = {}
+
+# --- Load the Machine Learning Ranking Model ---
+print("Loading ranking model...")
+ranking_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+print("Ranking model loaded.")
+
 
 # --- Pydantic Models ---
 class ChatRequest(BaseModel):
@@ -29,96 +38,124 @@ class ChatRequest(BaseModel):
 
 # --- Function to detect technical questions ---
 def is_technical_question(text: str):
-    """A simple check for keywords to decide if a question is technical."""
-    technical_keywords = [
-        "python", "code", "javascript", "java", "c++", "html", "css", 
-        "llm", "api", "prompt", "programming", "function", "script", "app", 
-        "error", "bug", "debug", "install", "library", "framework", "algorithm",
-        "data structure", "binary search", "3sum", "react", "fastapi"
-    ]
+    technical_keywords = ["python", "code", "javascript", "react", "fastapi"]
     return any(keyword in text.lower() for keyword in technical_keywords)
 
 # --- Groq API Connector ---
 async def ask_groq(prompt: str, system_prompt: str = None):
     if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="Groq API key not configured on the server.")
+        return "Groq API key not configured."
     
+    print("... Calling Groq API")
     api_url = "https://api.groq.com/openai/v1/chat/completions"
-    
     if system_prompt is None:
-        system_prompt = "You are a helpful assistant. Answer questions concisely."
+        system_prompt = "You are a helpful assistant."
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
-    ]
-    
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
     payload = {"model": "llama-3.1-8b-instant", "messages": messages}
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+
     async with httpx.AsyncClient(timeout=30) as client:
         try:
             r = await client.post(api_url, json=payload, headers=headers)
             r.raise_for_status()
-            response_json = r.json()
-            return response_json["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as e:
-            error_details = e.response.json().get('error', {}).get('message', 'Unknown API error')
-            raise HTTPException(status_code=e.response.status_code, detail=f"Groq API Error: {error_details}")
-        except (KeyError, IndexError):
-            raise HTTPException(status_code=500, detail="Could not parse the response from the AI.")
+            content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not content.strip(): return "Groq returned an empty response."
+            print("✅ Groq API call successful")
+            return content
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+            print(f"🔴 Groq API Error: {e}")
+            return f"An error occurred with the Groq API: {str(e)}"
 
-# --- Main Chat Endpoint (Final Hybrid Logic) ---
+# --- FINAL: Fireworks.ai API Connector (Corrected) ---
+async def ask_fireworks(prompt: str, system_prompt: str = None):
+    if not FIREWORKS_API_KEY:
+        return "Fireworks API key not configured."
+
+    print("... Calling Fireworks.ai API")
+    api_url = "https://api.fireworks.ai/inference/openai/v1/chat/completions"
+    if system_prompt is None:
+        system_prompt = "You are a helpful assistant."
+    
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+    
+    # THIS IS THE FIX: Using the simple model name for the OpenAI endpoint
+    payload = {"model": "llama-v3-8b-instruct", "messages": messages}
+    
+    headers = {"Authorization": f"Bearer {FIREWORKS_API_KEY}", "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            r = await client.post(api_url, json=payload, headers=headers)
+            r.raise_for_status()
+            content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not content.strip(): return "Fireworks AI returned an empty response."
+            print("✅ Fireworks API call successful")
+            return content
+        except Exception as e:
+            print(f"🔴 Fireworks API Error: {e}")
+            return f"An error occurred with the Fireworks API: {str(e)}"
+
+# --- Main Chat Endpoint ---
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    sid = req.session_id
-    session = SESSIONS.setdefault(sid, {})
+    print("\n--- New Request Received ---")
+    session = SESSIONS.setdefault(req.session_id, {})
 
-    # If this is the first message of a conversation, decide its type
+    # --- Session logic ---
+    if session.get("is_technical") and not session.get("clarified") and req.text.strip():
+        print("User asked a new question while clarifying. Resetting session.")
+        session = {}
+        SESSIONS[req.session_id] = session
+
+    if req.answers:
+        session.update(req.answers)
+        session["clarified"] = True
+
     if "is_technical" not in session:
         session["is_technical"] = is_technical_question(req.text)
         session["original_question"] = req.text
+    
+    system_prompt = "You are a helpful assistant."
+    prompt_to_send = session["original_question"]
 
-    # --- PATH 1: General Conversation ---
-    if not session["is_technical"]:
-        answer = await ask_groq(session['original_question'])
-        SESSIONS.pop(sid, None)  # End session after one answer
-        return {"type": "answer", "answer": answer}
-
-    # --- PATH 2: Technical Conversation ---
-    else:
-        if not session.get("clarified"):
-            if req.answers:
-                session.update(req.answers)
-                session["clarified"] = True
-            else:
-                return {
-                    "type": "clarify",
-                    "questions": [
-                        {"id": "use_case", "text": "This seems like a technical question. Which use case do you want (learning, research, production)?"},
-                        {"id": "skill_level", "text": "What's your technical knowledge level? (beginner, intermediate, advanced)"}
-                    ]
-                }
-        
-        original_question = session.get("original_question", "No question found.")
-        use_case = session.get("use_case", "general")
-        skill_level = session.get("skill_level", "beginner")
-
+    # --- Technical question logic ---
+    if session.get("is_technical") and not session.get("clarified"):
+        print("Asking clarification questions...")
+        return { "type": "clarify", "questions": [ {"id": "use_case", "text": "This seems like a technical question..."}, {"id": "skill_level", "text": "What's your technical knowledge level..."} ]}
+    elif session.get("is_technical"):
+        print("Handling clarified technical question...")
         system_prompt = "You are an expert prompt engineering tutor and Python developer."
-        detailed_prompt = f"""
+        original_question = session.get("original_question", "")
+        use_case = session.get("use_case", "")
+        skill_level = session.get("skill_level", "")
+        prompt_to_send = f"""
         User's original question: "{original_question}"
         Their use-case is: "{use_case}"
         Their skill-level is: "{skill_level}"
-
-        Please provide an answer tailored to these needs. Structure your response in three distinct parts:
-        1. **Clear Explanation:** Explain the core concept in a way that is appropriate for their skill level.
-        2. **Minimal Python Example:** Provide a clear, correct, and minimal Python code snippet that demonstrates the concept.
-        3. **Prompt Improvement Tips:** Give 2-3 specific tips on how the user could write a better prompt to get this kind of answer in the future.
+        Please provide a tailored answer...
         """
-        answer = await ask_groq(detailed_prompt, system_prompt)
-        
-        SESSIONS.pop(sid, None)
-        return {"type": "answer", "answer": answer}
 
+    print("Starting concurrent API calls to Groq and Fireworks...")
+    groq_response, fireworks_response = await asyncio.gather(
+        ask_groq(prompt_to_send, system_prompt),
+        ask_fireworks(prompt_to_send, system_prompt)
+    )
+    print("... Both API calls finished.")
+
+    print("Ranking responses with ML model...")
+    query = session["original_question"]
+    scores = ranking_model.predict([(query, groq_response), (query, fireworks_response)])
+    print(f"Scores - Groq: {scores[0]:.4f}, Fireworks: {scores[1]:.4f}")
+
+    if scores[0] >= scores[1]:
+        print("🏆 Groq response selected.")
+        best_answer = groq_response + "\n\n---\n*Answer from **Groq Llama 3.1**, selected by the ranking model.*"
+    else:
+        print("🏆 Fireworks response selected.")
+        # Corrected the model name in the footer text
+        best_answer = fireworks_response + "\n\n---\n*Answer from **Fireworks AI (Llama 3 8B)**, selected by the ranking model.*"
+
+    SESSIONS.pop(req.session_id, None)
+    print("--- Request Complete ---\n")
+    return {"type": "answer", "answer": best_answer}

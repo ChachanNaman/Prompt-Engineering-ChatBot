@@ -2,4 +2,4 @@ fastapi
 uvicorn
 httpx
 python-dotenv
-openai
+sentence-transformers[torch]
