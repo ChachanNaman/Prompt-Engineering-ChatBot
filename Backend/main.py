@@ -21,7 +21,8 @@ app.add_middleware(
 
 # --- API Keys and Session Storage ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 SESSIONS = {}
 
 # --- Load the Machine Learning Ranking Model ---
@@ -67,34 +68,60 @@ async def ask_groq(prompt: str, system_prompt: str = None):
             print(f"🔴 Groq API Error: {e}")
             return f"An error occurred with the Groq API: {str(e)}"
 
-# --- FINAL: Fireworks.ai API Connector (Corrected) ---
-async def ask_fireworks(prompt: str, system_prompt: str = None):
-    if not FIREWORKS_API_KEY:
-        return "Fireworks API key not configured."
+# --- OpenRouter API Connector ---
+async def ask_openrouter(prompt: str, system_prompt: str = None):
+    if not OPENROUTER_API_KEY:
+        return "OpenRouter API key not configured."
 
-    print("... Calling Fireworks.ai API")
-    api_url = "https://api.fireworks.ai/inference/openai/v1/chat/completions"
+    print("... Calling OpenRouter API")
+    api_url = "https://openrouter.ai/api/v1/chat/completions"
+    
     if system_prompt is None:
         system_prompt = "You are a helpful assistant."
     
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
     
-    # THIS IS THE FIX: Using the simple model name for the OpenAI endpoint
-    payload = {"model": "llama-v3-8b-instruct", "messages": messages}
+    payload = {
+        "model": "openai/gpt-3.5-turbo",  # Changed to a more reliable model
+        "messages": messages,
+        "max_tokens": 1024,
+        "temperature": 0.7,
+        "stream": False
+    }
     
-    headers = {"Authorization": f"Bearer {FIREWORKS_API_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "Prompt-Engineering-ChatBot",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
 
     async with httpx.AsyncClient(timeout=60) as client:
         try:
+            print(f"Sending request to OpenRouter with model: {payload['model']}")
             r = await client.post(api_url, json=payload, headers=headers)
-            r.raise_for_status()
-            content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not content.strip(): return "Fireworks AI returned an empty response."
-            print("✅ Fireworks API call successful")
+            
+            if r.status_code != 200:
+                error_msg = f"OpenRouter API Error: Status {r.status_code} - {r.text}"
+                print(f"🔴 {error_msg}")
+                return error_msg
+                
+            response_json = r.json()
+            content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            if not content or not content.strip():
+                print("🔴 OpenRouter returned empty content")
+                return "OpenRouter returned an empty response. Please try again."
+                
+            print("✅ OpenRouter API call successful")
             return content
+            
         except Exception as e:
-            print(f"🔴 Fireworks API Error: {e}")
-            return f"An error occurred with the Fireworks API: {str(e)}"
+            error_msg = f"OpenRouter API Error: {str(e)}"
+            print(f"🔴 {error_msg}")
+            return error_msg
+
 
 # --- Main Chat Endpoint ---
 @app.post("/chat")
@@ -117,12 +144,18 @@ async def chat(req: ChatRequest):
         session["original_question"] = req.text
     
     system_prompt = "You are a helpful assistant."
-    prompt_to_send = session["original_question"]
+    prompt_to_send = req.text  # Set the prompt from the request text
 
     # --- Technical question logic ---
     if session.get("is_technical") and not session.get("clarified"):
         print("Asking clarification questions...")
-        return { "type": "clarify", "questions": [ {"id": "use_case", "text": "This seems like a technical question..."}, {"id": "skill_level", "text": "What's your technical knowledge level..."} ]}
+        return {
+            "type": "clarify",
+            "questions": [
+                {"id": "use_case", "text": "This seems like a technical question. Which use case do you want (learning, research, production)?"},
+                {"id": "skill_level", "text": "What's your technical knowledge level? (beginner, intermediate, advanced)"}
+            ]
+        }
     elif session.get("is_technical"):
         print("Handling clarified technical question...")
         system_prompt = "You are an expert prompt engineering tutor and Python developer."
@@ -136,26 +169,27 @@ async def chat(req: ChatRequest):
         Please provide a tailored answer...
         """
 
-    print("Starting concurrent API calls to Groq and Fireworks...")
-    groq_response, fireworks_response = await asyncio.gather(
+    print("Starting concurrent API calls to Groq and OpenRouter...")
+    groq_response, openrouter_response = await asyncio.gather(
         ask_groq(prompt_to_send, system_prompt),
-        ask_fireworks(prompt_to_send, system_prompt)
+        ask_openrouter(prompt_to_send, system_prompt)
     )
     print("... Both API calls finished.")
 
     print("Ranking responses with ML model...")
-    query = session["original_question"]
-    scores = ranking_model.predict([(query, groq_response), (query, fireworks_response)])
-    print(f"Scores - Groq: {scores[0]:.4f}, Fireworks: {scores[1]:.4f}")
+    query = session.get("original_question", req.text)
+    scores = ranking_model.predict([(query, groq_response), (query, openrouter_response)])
+    print(f"Scores - Groq: {scores[0]:.4f}, OpenRouter: {scores[1]:.4f}")
 
     if scores[0] >= scores[1]:
         print("🏆 Groq response selected.")
         best_answer = groq_response + "\n\n---\n*Answer from **Groq Llama 3.1**, selected by the ranking model.*"
     else:
-        print("🏆 Fireworks response selected.")
-        # Corrected the model name in the footer text
-        best_answer = fireworks_response + "\n\n---\n*Answer from **Fireworks AI (Llama 3 8B)**, selected by the ranking model.*"
-
+        print("🏆 OpenRouter response selected.")
+        best_answer = openrouter_response + "\n\n---\n*Answer from **Mistral-7B**, selected by the ranking model.*"
+    
     SESSIONS.pop(req.session_id, None)
     print("--- Request Complete ---\n")
     return {"type": "answer", "answer": best_answer}
+
+
