@@ -7,11 +7,11 @@ from dotenv import load_dotenv
 import asyncio
 from sentence_transformers import CrossEncoder
 
-load_dotenv()
-app = FastAPI()
+load_dotenv()  # Load environment variables from .env file
+app = FastAPI()     # Create FastAPI app
 
-# --- Middleware for CORS ---
-app.add_middleware(
+# --- Middleware for CORS --- 
+app.add_middleware( 
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
     allow_credentials=True,
@@ -23,21 +23,25 @@ app.add_middleware(
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-SESSIONS = {}
+SESSIONS = {} # In-memory session storage what user gave and get
 
 # --- Load the Machine Learning Ranking Model ---
 print("Loading ranking model...")
 ranking_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 print("Ranking model loaded.")
-
+#When your server first starts, 
+#it loads the ms-marco-MiniLM-L-6-v2 model into memory.
 
 # --- Pydantic Models ---
+#Defines the JSON structure FastAPI expects for a /chat request.
 class ChatRequest(BaseModel):
     session_id: str
     text: str
     answers: dict | None = None
 
 # --- Function to detect technical questions ---
+#A simple helper function. It just checks if the user's text contains any keywords from your list.
+# This is the trigger for your "clarification" logic.
 def is_technical_question(text: str):
     technical_keywords = ["python", "code", "javascript", "react", "fastapi"]
     return any(keyword in text.lower() for keyword in technical_keywords)
@@ -45,7 +49,7 @@ def is_technical_question(text: str):
 # --- Groq API Connector ---
 async def ask_groq(prompt: str, system_prompt: str = None):
     if not GROQ_API_KEY:
-        return "Groq API key not configured."
+        return "Groq API key not configured."  
     
     print("... Calling Groq API")
     api_url = "https://api.groq.com/openai/v1/chat/completions"
@@ -55,6 +59,9 @@ async def ask_groq(prompt: str, system_prompt: str = None):
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
     payload = {"model": "llama-3.1-8b-instant", "messages": messages}
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+
+    #They use httpx.AsyncClient to make the actual HTTP POST request, 
+    # sending the user's prompt and your API key.
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -124,10 +131,12 @@ async def ask_openrouter(prompt: str, system_prompt: str = None):
 
 
 # --- Main Chat Endpoint ---
+#This decorator tells FastAPI to create a new endpoint that listens for HTTP POST requests at the /chat URL.
 @app.post("/chat")
 async def chat(req: ChatRequest):
     print("\n--- New Request Received ---")
-    session = SESSIONS.setdefault(req.session_id, {})
+    session = SESSIONS.setdefault(req.session_id, {}) #It tries to get the session for the given session_id. 
+    #If it doesn't exist, it creates a new empty dictionary {} for that user and returns it.
 
     # --- Session logic ---
     if session.get("is_technical") and not session.get("clarified") and req.text.strip():
@@ -148,6 +157,9 @@ async def chat(req: ChatRequest):
 
     # --- Technical question logic ---
     if session.get("is_technical") and not session.get("clarified"):
+        ##Is this a new technical question that has not been clarified yet?
+        #It stops immediately and returns the clarify message with the two questions. 
+        #It does not call any LLMs.
         print("Asking clarification questions...")
         return {
             "type": "clarify",
@@ -168,6 +180,10 @@ async def chat(req: ChatRequest):
         Their skill-level is: "{skill_level}"
         Please provide a tailored answer...
         """
+    #If the question was technical and clarified, it engineers a new prompt. 
+    #Instead of just sending "how to use react",it sends a much more detailed prompt including 
+    #the user's original question, their use case (e.g., "production"), and their skill level (e.g., "beginner"). 
+    #This will result in a much better, more tailored answer from the LLMs.
 
     print("Starting concurrent API calls to Groq and OpenRouter...")
     groq_response, openrouter_response = await asyncio.gather(
@@ -176,8 +192,8 @@ async def chat(req: ChatRequest):
     )
     print("... Both API calls finished.")
 
-    print("Ranking responses with ML model...")
-    query = session.get("original_question", req.text)
+    print("Ranking responses with ML model...")   
+    query = session.get("original_question", req.text)  #his is where your loaded ML model is used.
     scores = ranking_model.predict([(query, groq_response), (query, openrouter_response)])
     print(f"Scores - Groq: {scores[0]:.4f}, OpenRouter: {scores[1]:.4f}")
 
@@ -186,7 +202,7 @@ async def chat(req: ChatRequest):
         best_answer = groq_response + "\n\n---\n*Answer from **Groq Llama 3.1**, selected by the ranking model.*"
     else:
         print("🏆 OpenRouter response selected.")
-        best_answer = openrouter_response + "\n\n---\n*Answer from **Mistral-7B**, selected by the ranking model.*"
+        best_answer = openrouter_response + "\n\n---\n*Answer from **GPT-3.5-turbo**, selected by the ranking model.*"
     
     SESSIONS.pop(req.session_id, None)
     print("--- Request Complete ---\n")
