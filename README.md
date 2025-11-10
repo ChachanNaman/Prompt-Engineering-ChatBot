@@ -1,4 +1,5 @@
-Prompt-Engineering-ChatBot
+# Prompt-Engineering-ChatBot
+
 
 A simple chatbot framework built using prompt-engineering techniques.
 This repository contains a backend (Python) and a frontend (JavaScript/React) to run a conversational UI leveraging prompts and an LLM (or API) to generate responses.
