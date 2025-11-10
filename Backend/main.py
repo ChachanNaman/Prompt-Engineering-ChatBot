@@ -178,10 +178,10 @@ async def chat(req: ChatRequest):
         User's original question: "{original_question}"
         Their use-case is: "{use_case}"
         Their skill-level is: "{skill_level}"
-        Please provide a tailored answer...
+        Please provide a tailored answer...f
         """
     #If the question was technical and clarified, it engineers a new prompt. 
-    #Instead of just sending "how to use react",it sends a much more detailed prompt including 
+    #Instead of just sending "how to use react",fzseit sends a much more detailed prompt including 
     #the user's original question, their use case (e.g., "production"), and their skill level (e.g., "beginner"). 
     #This will result in a much better, more tailored answer from the LLMs.
 
