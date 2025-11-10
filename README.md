@@ -1,117 +1,124 @@
 # Prompt-Engineering-ChatBot
 
-
-A simple chatbot framework built using prompt-engineering techniques.
+A simple chatbot framework built using prompt-engineering techniques.  
 This repository contains a backend (Python) and a frontend (JavaScript/React) to run a conversational UI leveraging prompts and an LLM (or API) to generate responses.
 
-🔍 Structure
+---
 
-Backend/ — Python backend code (API, model-interface, prompt wrappers)
+## 🔍 Structure
 
-frontend/ — React (or web) frontend code (UI for chat)
+- **Backend/** — Python backend code (API, model-interface, prompt wrappers)  
+- **frontend/** — React (or web) frontend code (UI for chat)  
+- **requirements.txt** — Python dependencies  
+- **package-lock.json** — Node package lock for frontend  
+- **.gitignore** — standard ignored files  
 
-requirements.txt — Python dependencies
+---
 
-package-lock.json — Node package lock for frontend
-
-.gitignore — standard ignored files
-
-✅ Prerequisites
+## ✅ Prerequisites
 
 Before you begin, ensure you have:
 
-Python 3.8+ installed
+- Python 3.8+ installed  
+- Node.js 14+ / npm or yarn installed  
+- An API key (OpenAI, Groq, OpenRouter, etc.)  
+- Git installed  
 
-Node.js 14+ / npm or yarn installed (for the frontend)
+---
 
-An API key or access to an LLM (e.g., OpenAI API, or another LLM service)
+## 🛠 Installation
 
-Git installed (to clone the repo)
+### Clone the repository
 
-🛠 Installation
-
-Clone the repository
-
+```bash
 git clone https://github.com/ChachanNaman/Prompt-Engineering-ChatBot.git
 cd Prompt-Engineering-ChatBot
+```
 
+### Install backend dependencies
 
-Install backend dependencies
-
+```bash
 cd Backend
 pip install -r requirements.txt
+```
 
+### Install frontend dependencies
 
-Install frontend dependencies:
-
+```bash
 cd ../frontend
-npm install  # or yarn install
+npm install   # or yarn install
+```
 
-🔧 Configuration
+---
 
-In the backend, find a configuration file or environment variables section (e.g., .env) and set your API key:
+## 🔧 Configuration
 
+Create a `.env` file in the backend and add:
+
+```
 GROQ_API_KEY=your_api_key_here
 OPENROUTER_API_KEY=your_api_key_here
+```
 
-🚀 Running the Project
-Backend
+---
 
-In the Backend/ folder:
+## 🚀 Running the Project
 
+### Backend
+
+```bash
+cd Backend
 python app.py
+```
 
+### Frontend
 
-Frontend
-
-In the frontend/ folder:
-
+```bash
+cd frontend
 npm run start   # or yarn start
+```
 
+Now open:
 
-This will launch the web UI (default http://localhost:3000), which connects to the backend API.
+```
+http://localhost:3000
+```
 
-🧠 Usage
+---
 
-In your browser, open the frontend URL (e.g., http://localhost:3000).
+## 🧠 Usage
 
-Send a message in the chat interface → the frontend will send your message to the backend.
+- Open the frontend UI  
+- Type a message  
+- The frontend sends your message to the backend  
+- Backend builds the prompt → calls the LLM → returns response  
+- You can customize prompt logic in `Backend/`
 
-The backend will process your input, build or adapt the prompt, call the LLM API, then return the response to the frontend for display.
+---
 
-You can adapt the prompt engineering logic in the backend (under Backend/…) to change the behaviour (tone, persona, rules) of the chatbot.
+## 📁 Customisation & Extension
 
-📁 Customisation & Extension
+- Modify system prompts  
+- Add memory / chat history  
+- Change LLM provider (Groq, OpenRouter, OpenAI, Gemini, etc.)  
+- Enhance UI (themes, voice, file upload)
 
-Modify the system instructions / prompt template in the backend to change how the bot behaves (e.g., “You are a friendly assistant …”).
+---
 
-Add memory/context tracking if you want multi-turn contextual conversations.
+## 📚 Resources & References
 
-Swap the LLM provider or model (ensure credentials/config updated).
+- OpenAI Prompt Engineering Guide  
+- Prompt Engineering research papers (arXiv)  
+- GeeksforGeeks articles on LLMs  
 
-Improve the frontend UI (e.g., support voice, attachments, themes).
+---
 
+## 🧑‍💻 Contributing
 
-📚 Resources & References
+1. Fork the repo  
+2. Create a branch (`feature-new-prompt`)  
+3. Make changes  
+4. Submit a PR  
+5. Ensure style/formatting is consistent  
 
-Learn more about prompt engineering: see the guide at the OpenAI developer docs. 
-OpenAI Platform
-+2
-GeeksforGeeks
-+2
-
-For best practices in LLM-driven chatbots and prompts, check curated resources such as the Prompt Engineering pattern catalogue. 
-arXiv
-+1
-
-🧑‍💻 Contributing
-
-Fork the repo.
-
-Create a new branch (e.g., feature-new-prompt).
-
-Make your changes, test locally.
-
-Submit a Pull Request with a description of the change.
-
-Ensure your code is linted/formatted and includes updates to README if you changed major behaviour.
+---
