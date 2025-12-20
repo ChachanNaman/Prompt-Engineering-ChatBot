@@ -71,7 +71,7 @@ function App() {
             fullyCorrectedText = applyCorrection(fullyCorrectedText, match);
         }
       });
-      
+      //add conditional functionality here -> 20
       const uniqueSuggestions = [];
       const seen = new Set();
 
