@@ -6,7 +6,7 @@ import httpx
 from dotenv import load_dotenv
 import asyncio
 from sentence_transformers import CrossEncoder
-
+##
 load_dotenv()  # Load environment variables from .env file
 app = FastAPI()     # Create FastAPI app
 
