@@ -1,4 +1,0 @@
-Flask
-openai
-google-generativeai
-requests

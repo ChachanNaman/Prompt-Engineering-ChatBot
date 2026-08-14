@@ -1,5 +1,4 @@
 fastapi
-uvicorn
+uvicorn[standard]
 httpx
 python-dotenv
-sentence-transformers[torch]

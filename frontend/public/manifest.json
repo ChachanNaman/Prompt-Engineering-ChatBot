@@ -1,6 +1,6 @@
 {
-  "short_name": "React App",
-  "name": "Create React App Sample",
+  "short_name": "PE Chatbot",
+  "name": "Prompt Engineering Chatbot",
   "icons": [
     {
       "src": "favicon.ico",

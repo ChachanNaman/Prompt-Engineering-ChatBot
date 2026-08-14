@@ -1,8 +1,14 @@
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { render, screen } from "@testing-library/react";
+import App from "./App";
 
-test('renders learn react link', () => {
+test("renders the chat title and input", () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(screen.getByText(/Prompt Engineering Chatbot/i)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(/Type your message/i)).toBeInTheDocument();
+});
+
+test("send button is disabled with empty input", () => {
+  render(<App />);
+  const sendButton = screen.getByRole("button", { name: /send/i });
+  expect(sendButton).toBeDisabled();
 });

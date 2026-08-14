@@ -1,19 +1,27 @@
+import os
+import re
+import asyncio
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os
-import httpx
 from dotenv import load_dotenv
-import asyncio
-from sentence_transformers import CrossEncoder
-##
-load_dotenv()  # Load environment variables from .env file
-app = FastAPI()     # Create FastAPI app
 
-# --- Middleware for CORS --- 
-app.add_middleware( 
+load_dotenv()
+app = FastAPI(title="Prompt Engineering ChatBot API")
+
+# --- CORS ---
+# ALLOWED_ORIGINS is a comma-separated list, e.g. "http://localhost:3000,https://myapp.vercel.app"
+_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,189 +31,213 @@ app.add_middleware(
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-SESSIONS = {} # In-memory session storage what user gave and get
+SESSIONS: dict = {}  # In-memory session storage: what the user gave and got
 
-# --- Load the Machine Learning Ranking Model ---
-print("Loading ranking model...")
-ranking_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-print("Ranking model loaded.")
-#When your server first starts, 
-#it loads the ms-marco-MiniLM-L-6-v2 model into memory.
 
 # --- Pydantic Models ---
-#Defines the JSON structure FastAPI expects for a /chat request.
 class ChatRequest(BaseModel):
     session_id: str
     text: str
     answers: dict | None = None
 
-# --- Function to detect technical questions ---
-#A simple helper function. It just checks if the user's text contains any keywords from your list.
-# This is the trigger for your "clarification" logic.
-def is_technical_question(text: str):
-    technical_keywords = ["python", "code", "javascript", "react", "fastapi"]
-    return any(keyword in text.lower() for keyword in technical_keywords)
+
+# --- Technical question detection ---
+def is_technical_question(text: str) -> bool:
+    technical_keywords = [
+        "python", "code", "javascript", "react", "fastapi", "typescript",
+        "sql", "api", "algorithm", "function", "debug", "error", "css",
+        "html", "java", "docker", "git", "regex",
+    ]
+    words = set(re.findall(r"[a-z0-9']+", text.lower()))
+    return any(keyword in words for keyword in technical_keywords)
+
+
+# --- Lightweight, dependency-free answer scorer ---
+# Scores each candidate answer against the original query using cheap
+# heuristics: how much of the query's meaningful vocabulary the answer
+# covers, whether the answer looks like a real (non-error, non-empty)
+# response, and whether its length is in a sensible range. This replaces
+# a torch/sentence-transformers CrossEncoder, which added ~800MB of
+# dependencies and multi-second cold starts for a marginal ranking gain.
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "in", "on", "for", "with", "and", "or", "but", "if",
+    "how", "what", "why", "when", "where", "who", "which", "do", "does",
+    "did", "i", "you", "it", "this", "that", "my", "me", "can", "could",
+    "would", "should", "please", "explain", "tell", "about",
+}
+
+_ERROR_MARKERS = (
+    "error occurred", "api key not configured", "returned an empty response",
+    "openrouter api error", "groq api error",
+)
+
+
+def _tokenize(text: str) -> set:
+    return {w for w in re.findall(r"[a-zA-Z0-9']+", text.lower()) if w not in _STOPWORDS and len(w) > 2}
+
+
+def score_answer(query: str, answer: str) -> float:
+    if not answer or not answer.strip():
+        return 0.0
+
+    lowered = answer.lower()
+    if any(marker in lowered for marker in _ERROR_MARKERS):
+        return 0.0
+
+    query_terms = _tokenize(query)
+    answer_terms = _tokenize(answer)
+    overlap = len(query_terms & answer_terms) / len(query_terms) if query_terms else 0.5
+
+    word_count = len(answer.split())
+    if word_count < 8:
+        length_score = word_count / 8
+    elif word_count > 400:
+        length_score = max(0.4, 1 - (word_count - 400) / 800)
+    else:
+        length_score = 1.0
+
+    structure_bonus = 0.1 if ("```" in answer or re.search(r"\n\s*[-*\d]", answer)) else 0.0
+
+    return round(0.6 * overlap + 0.3 * length_score + structure_bonus, 4)
+
 
 # --- Groq API Connector ---
-async def ask_groq(prompt: str, system_prompt: str = None):
+async def ask_groq(messages: list) -> str:
     if not GROQ_API_KEY:
-        return "Groq API key not configured."  
-    
-    print("... Calling Groq API")
-    api_url = "https://api.groq.com/openai/v1/chat/completions"
-    if system_prompt is None:
-        system_prompt = "You are a helpful assistant."
+        return "Groq API key not configured."
 
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+    api_url = "https://api.groq.com/openai/v1/chat/completions"
     payload = {"model": "llama-3.1-8b-instant", "messages": messages}
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-
-    #They use httpx.AsyncClient to make the actual HTTP POST request, 
-    # sending the user's prompt and your API key.
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
             r = await client.post(api_url, json=payload, headers=headers)
             r.raise_for_status()
             content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not content.strip(): return "Groq returned an empty response."
-            print("✅ Groq API call successful")
-            return content
+            return content.strip() or "Groq returned an empty response."
         except Exception as e:
-            print(f"🔴 Groq API Error: {e}")
             return f"An error occurred with the Groq API: {str(e)}"
 
+
 # --- OpenRouter API Connector ---
-async def ask_openrouter(prompt: str, system_prompt: str = None):
+async def ask_openrouter(messages: list) -> str:
     if not OPENROUTER_API_KEY:
         return "OpenRouter API key not configured."
 
-    print("... Calling OpenRouter API")
     api_url = "https://openrouter.ai/api/v1/chat/completions"
-    
-    if system_prompt is None:
-        system_prompt = "You are a helpful assistant."
-    
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-    
+
     payload = {
-        "model": "openai/gpt-3.5-turbo",  # Changed to a more reliable model
+        "model": "openai/gpt-3.5-turbo",
         "messages": messages,
         "max_tokens": 1024,
         "temperature": 0.7,
-        "stream": False
+        "stream": False,
     }
-    
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "http://localhost:3000",
+        "HTTP-Referer": ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "http://localhost:3000",
         "X-Title": "Prompt-Engineering-ChatBot",
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Accept": "application/json",
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
         try:
-            print(f"Sending request to OpenRouter with model: {payload['model']}")
             r = await client.post(api_url, json=payload, headers=headers)
-            
             if r.status_code != 200:
-                error_msg = f"OpenRouter API Error: Status {r.status_code} - {r.text}"
-                print(f"🔴 {error_msg}")
-                return error_msg
-                
-            response_json = r.json()
-            content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-            
-            if not content or not content.strip():
-                print("🔴 OpenRouter returned empty content")
-                return "OpenRouter returned an empty response. Please try again."
-                
-            print("✅ OpenRouter API call successful")
-            return content
-            
+                return f"OpenRouter API Error: Status {r.status_code} - {r.text}"
+            content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content.strip() or "OpenRouter returned an empty response. Please try again."
         except Exception as e:
-            error_msg = f"OpenRouter API Error: {str(e)}"
-            print(f"🔴 {error_msg}")
-            return error_msg
+            return f"OpenRouter API Error: {str(e)}"
+
+
+# --- Health check (used by Railway/uptime pings) ---
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "groq_configured": bool(GROQ_API_KEY),
+        "openrouter_configured": bool(OPENROUTER_API_KEY),
+    }
 
 
 # --- Main Chat Endpoint ---
-#This decorator tells FastAPI to create a new endpoint that listens for HTTP POST requests at the /chat URL.
+# Sessions persist across a whole conversation (not just one turn) so
+# follow-up questions ("explain that further") have context. A session
+# only resets when the frontend starts a new chat (new session_id) or
+# the process restarts (in-memory store).
+MAX_HISTORY_TURNS = 8  # user+assistant pairs kept per session, to bound prompt size
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    print("\n--- New Request Received ---")
-    session = SESSIONS.setdefault(req.session_id, {}) #It tries to get the session for the given session_id. 
-    #If it doesn't exist, it creates a new empty dictionary {} for that user and returns it.
-
-    # --- Session logic ---
-    if session.get("is_technical") and not session.get("clarified") and req.text.strip():
-        print("User asked a new question while clarifying. Resetting session.")
-        session = {}
-        SESSIONS[req.session_id] = session
+    session = SESSIONS.setdefault(
+        req.session_id, {"history": [], "system_prompt": "You are a helpful assistant."}
+    )
 
     if req.answers:
-        session.update(req.answers)
-        session["clarified"] = True
-
-    if "is_technical" not in session:
-        session["is_technical"] = is_technical_question(req.text)
-        session["original_question"] = req.text
-    
-    system_prompt = "You are a helpful assistant."
-    prompt_to_send = req.text  # Set the prompt from the request text
-
-    # --- Technical question logic ---
-    if session.get("is_technical") and not session.get("clarified"):
-        ##Is this a new technical question that has not been clarified yet?
-        #It stops immediately and returns the clarify message with the two questions. 
-        #It does not call any LLMs.
-        print("Asking clarification questions...")
-        return {
-            "type": "clarify",
-            "questions": [
-                {"id": "use_case", "text": "This seems like a technical question. Which use case do you want (learning, research, production)?"},
-                {"id": "skill_level", "text": "What's your technical knowledge level? (beginner, intermediate, advanced)"}
-            ]
-        }
-    elif session.get("is_technical"):
-        print("Handling clarified technical question...")
-        system_prompt = "You are an expert prompt engineering tutor and Python developer."
-        original_question = session.get("original_question", "")
-        use_case = session.get("use_case", "")
-        skill_level = session.get("skill_level", "")
-        prompt_to_send = f"""
-        User's original question: "{original_question}"
-        Their use-case is: "{use_case}"
-        Their skill-level is: "{skill_level}"
-        Please provide a tailored answer...f
-        """
-    #If the question was technical and clarified, it engineers a new prompt. 
-    #Instead of just sending "how to use react",fzseit sends a much more detailed prompt including 
-    #the user's original question, their use case (e.g., "production"), and their skill level (e.g., "beginner"). 
-    #This will result in a much better, more tailored answer from the LLMs.
-
-    print("Starting concurrent API calls to Groq and OpenRouter...")
-    groq_response, openrouter_response = await asyncio.gather(
-        ask_groq(prompt_to_send, system_prompt),
-        ask_openrouter(prompt_to_send, system_prompt)
-    )
-    print("... Both API calls finished.")
-
-    print("Ranking responses with ML model...")   
-    query = session.get("original_question", req.text)  #his is where your loaded ML model is used.
-    scores = ranking_model.predict([(query, groq_response), (query, openrouter_response)])
-    print(f"Scores - Groq: {scores[0]:.4f}, OpenRouter: {scores[1]:.4f}")
-
-    if scores[0] >= scores[1]:
-        print("🏆 Groq response selected.")
-        best_answer = groq_response + "\n\n---\n*Answer from **Groq Llama 3.1**, selected by the ranking model.*"
+        # The user just answered the clarifying questions for a pending technical question.
+        use_case = req.answers.get("use_case", "")
+        skill_level = req.answers.get("skill_level", "")
+        original_question = session.pop("pending_question", req.text)
+        session["system_prompt"] = "You are an expert prompt engineering tutor and Python developer."
+        user_content = (
+            f'User\'s original question: "{original_question}"\n'
+            f'Their use-case is: "{use_case}"\n'
+            f'Their skill-level is: "{skill_level}"\n'
+            f"Please provide a tailored answer."
+        )
+        score_query = original_question
     else:
-        print("🏆 OpenRouter response selected.")
-        best_answer = openrouter_response + "\n\n---\n*Answer from **GPT-3.5-turbo**, selected by the ranking model.*"
-    
-    SESSIONS.pop(req.session_id, None)
-    print("--- Request Complete ---\n")
-    return {"type": "answer", "answer": best_answer}
+        text = req.text.strip()
+        if not text:
+            return {"type": "answer", "answer": "Please type a message.", "meta": None}
 
+        # Only trigger the clarification flow for the first technical question
+        # of a brand-new conversation — not on every technical-sounding follow-up.
+        if not session["history"] and "pending_question" not in session and is_technical_question(text):
+            session["pending_question"] = text
+            return {
+                "type": "clarify",
+                "questions": [
+                    {"id": "use_case", "text": "This seems like a technical question. Which use case do you want (learning, research, production)?"},
+                    {"id": "skill_level", "text": "What's your technical knowledge level? (beginner, intermediate, advanced)"},
+                ],
+            }
+        user_content = text
+        score_query = text
 
+    messages = [{"role": "system", "content": session["system_prompt"]}]
+    messages.extend(session["history"])
+    messages.append({"role": "user", "content": user_content})
+
+    groq_response, openrouter_response = await asyncio.gather(
+        ask_groq(messages),
+        ask_openrouter(messages),
+    )
+
+    groq_score = score_answer(score_query, groq_response)
+    openrouter_score = score_answer(score_query, openrouter_response)
+
+    if groq_score >= openrouter_score:
+        winner, model_name, raw_answer = "groq", "Groq Llama 3.1", groq_response
+    else:
+        winner, model_name, raw_answer = "openrouter", "GPT-3.5 Turbo", openrouter_response
+
+    session["history"].append({"role": "user", "content": user_content})
+    session["history"].append({"role": "assistant", "content": raw_answer})
+    session["history"] = session["history"][-(MAX_HISTORY_TURNS * 2):]
+
+    return {
+        "type": "answer",
+        "answer": f"{raw_answer}\n\n---\n*Answer from **{model_name}**, selected by the ranking model.*",
+        "meta": {
+            "winner": winner,
+            "model": model_name,
+            "scores": {"groq": groq_score, "openrouter": openrouter_score},
+            "alternates": {"groq": groq_response, "openrouter": openrouter_response},
+        },
+    }
