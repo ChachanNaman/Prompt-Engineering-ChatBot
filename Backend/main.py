@@ -28,8 +28,11 @@ app.add_middleware(
 )
 
 # --- API Keys and Session Storage ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# .strip() guards against trailing newlines/whitespace from how some hosting
+# dashboards store pasted env var values — a stray "\n" in an Authorization
+# header makes httpx raise "Illegal header value" and silently breaks the call.
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip() or None
+OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip() or None
 
 SESSIONS: dict = {}  # In-memory session storage: what the user gave and got
 
