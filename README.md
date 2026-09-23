@@ -5,7 +5,7 @@
 **A dual-model AI chatbot that races Groq (Llama 3.1) against OpenRouter (GPT‑3.5) on every message, auto-scores both answers, and serves you the better one — wrapped in a glassmorphic React UI.**
 
 [![Backend](https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi&logoColor=white)](Backend)
-[![Frontend](https://img.shields.io/badge/frontend-React_19-61DAFB?logo=react&logoColor=black)](frontend)
+[![Frontend](https://img.shields.io/badge/frontend-Next.js_16-000000?logo=next.js&logoColor=white)](frontend)
 [![Deploy](https://img.shields.io/badge/deploy-Render_%2B_Vercel-6d5bf7)](#-deployment)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#)
 
@@ -57,7 +57,7 @@ Most "AI chatbot" demos wrap a single API call in a UI. This one is a small pipe
 ```
 
 **Backend** — Python 3.12, FastAPI, `httpx` for async HTTP calls, in-memory session store for the clarification flow.
-**Frontend** — React 19 (Create React App), `react-markdown` for rendering, CSS custom properties for theming, no CSS framework — hand-rolled glassmorphism.
+**Frontend** — Next.js 16 (App Router) + React 19, TypeScript, Tailwind CSS v4, shadcn + beUI agent components (motion), `react-markdown` for rendering with fenced code routed through a syntax-highlighted code block. ChatGPT-style light/dark theming.
 
 ## 📁 Project Structure
 
@@ -68,8 +68,13 @@ Backend/
   Procfile             Railway/Heroku-style start command
   .env.example
 frontend/
-  src/App.js           Chat UI, state, API calls, voice + grammar features
-  src/App.css          Theming, glassmorphism, layout, animations
+  app/page.tsx         Renders the chat
+  app/layout.tsx       Fonts, metadata, no-flash theme script
+  app/globals.css      Tailwind v4 + theme tokens (light/dark)
+  components/chat.tsx  Chat UI: state, API calls, clarify flow, voice + grammar
+  components/markdown.tsx   Markdown renderer (code fences → CodeBlock)
+  components/agents/*  beUI agent components (message, prompt-input, approval-card, …)
+  lib/chat-api.ts      Backend client, types, language mapping
   .env.example
 ```
 
@@ -99,14 +104,15 @@ Backend runs at `http://127.0.0.1:8000`. Check `http://127.0.0.1:8000/health` to
 cd frontend
 npm install
 cp .env.example .env.local   # optional locally — defaults to http://127.0.0.1:8000
-npm start
+npm run dev
 ```
 
-Frontend runs at `http://localhost:3000`.
+Frontend runs at `http://localhost:3000`. Set `NEXT_PUBLIC_API_URL` in `.env.local`
+to point at the backend (no trailing slash, no `/chat`).
 
 ## 🌐 Deployment
 
-This app is split-deployed: **Render** for the backend (long-running Python process, free tier), **Vercel** for the frontend (static React build).
+This app is split-deployed: **Render** for the backend (long-running Python process, free tier), **Vercel** for the frontend (Next.js).
 
 ### Backend → Render
 
@@ -120,9 +126,9 @@ This app is split-deployed: **Render** for the backend (long-running Python proc
 
 ### Frontend → Vercel
 
-1. On [Vercel](https://vercel.com), import this repo → set the root directory to `frontend`.
-2. Add environment variable `REACT_APP_API_URL` = your Render backend URL (no trailing slash).
-3. Deploy. Vercel auto-detects Create React App (`npm run build`, output `build/`).
+1. On [Vercel](https://vercel.com), import this repo → set the root directory to `frontend`. Framework preset should be **Next.js** (if this project was previously deployed as Create React App, change the preset from CRA to Next.js and clear any custom build/output overrides).
+2. Add environment variable `NEXT_PUBLIC_API_URL` = your Render backend URL (no trailing slash, no `/chat`). If you had `REACT_APP_API_URL` before, remove it.
+3. Deploy. Vercel auto-detects Next.js (`next build`).
 4. Once deployed, go back to Render and update `ALLOWED_ORIGINS` to include your new Vercel domain, then redeploy the backend.
 
 ## 🧠 How the ranking works
