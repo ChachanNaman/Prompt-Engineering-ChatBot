@@ -351,12 +351,29 @@ async def chat(req: ChatRequest):
     messages.extend(session["history"])
     messages.append({"role": "user", "content": user_content})
 
-    groq_response, openrouter_response = await asyncio.gather(
-        ask_groq(messages),
-        ask_openrouter(messages),
+    import time  # TEMP: latency diagnostics, remove after investigation
+    _t0 = time.perf_counter()
+
+    async def _timed(coro, label):
+        t0 = time.perf_counter()
+        result = await coro
+        return result, (label, round(time.perf_counter() - t0, 3))
+
+    (groq_response, groq_timing), (openrouter_response, openrouter_timing) = await asyncio.gather(
+        _timed(ask_groq(messages), "groq"),
+        _timed(ask_openrouter(messages), "openrouter"),
     )
+    _t1 = time.perf_counter()
 
     groq_score, openrouter_score = await score_answers(score_query, [groq_response, openrouter_response])
+    _t2 = time.perf_counter()
+
+    _timing_debug = {
+        "providers_parallel_s": round(_t1 - _t0, 3),
+        "groq_s": groq_timing[1],
+        "openrouter_s": openrouter_timing[1],
+        "cross_encoder_s": round(_t2 - _t1, 3),
+    }
 
     def _ok(resp: str) -> bool:
         lowered = (resp or "").lower()
@@ -396,5 +413,6 @@ async def chat(req: ChatRequest):
             "scores": {"groq": groq_score, "openrouter": openrouter_score},
             "ok": {"groq": groq_ok, "openrouter": openrouter_ok},
             "alternates": {"groq": groq_response, "openrouter": openrouter_response},
+            "_timing_debug": _timing_debug,
         },
     }
