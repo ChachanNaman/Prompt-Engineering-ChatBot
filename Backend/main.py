@@ -1,14 +1,25 @@
 import os
 import re
 import asyncio
+import logging
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+logger = logging.getLogger("uvicorn.error")
+
 load_dotenv()
 app = FastAPI(title="Prompt Engineering ChatBot API")
+
+
+@app.on_event("startup")
+async def _warm_cross_encoder():
+    # Load the CrossEncoder in the background during boot, not on the first
+    # /chat request, so the first real user doesn't eat the multi-second
+    # model load on top of the two LLM calls.
+    asyncio.create_task(_get_cross_encoder())
 
 # --- CORS ---
 # ALLOWED_ORIGINS is a comma-separated list, e.g. "http://localhost:3000,https://myapp.vercel.app"
@@ -92,13 +103,20 @@ def is_technical_question(text: str) -> bool:
     return bool(words & _TECH_WORDS)
 
 
-# --- Lightweight, dependency-free answer scorer ---
-# Scores each candidate answer against the original query using cheap
-# heuristics: how much of the query's meaningful vocabulary the answer
-# covers, whether the answer looks like a real (non-error, non-empty)
-# response, and whether its length is in a sensible range. This replaces
-# a torch/sentence-transformers CrossEncoder, which added ~800MB of
-# dependencies and multi-second cold starts for a marginal ranking gain.
+# --- CrossEncoder-based answer reranker ---
+# Scores each candidate answer against the original query with a real
+# sentence-transformers CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2),
+# which jointly encodes (query, answer) pairs through a transformer rather
+# than comparing independent embeddings — the pairwise joint attention is
+# what makes it a meaningfully better relevance signal than bag-of-words
+# overlap. The model is loaded lazily (first request pays the cold-start,
+# not app boot) and inference runs in a worker thread via asyncio.to_thread
+# so the blocking torch call never stalls the FastAPI event loop.
+_ERROR_MARKERS = (
+    "error occurred", "api key not configured", "returned an empty response",
+    "openrouter api error", "groq api error",
+)
+
 _STOPWORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "to", "of", "in", "on", "for", "with", "and", "or", "but", "if",
@@ -107,24 +125,31 @@ _STOPWORDS = {
     "would", "should", "please", "explain", "tell", "about",
 }
 
-_ERROR_MARKERS = (
-    "error occurred", "api key not configured", "returned an empty response",
-    "openrouter api error", "groq api error",
-)
+_CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+_cross_encoder = None
+_cross_encoder_lock = asyncio.Lock()
 
 
 def _tokenize(text: str) -> set:
     return {w for w in re.findall(r"[a-zA-Z0-9']+", text.lower()) if w not in _STOPWORDS and len(w) > 2}
 
 
-def score_answer(query: str, answer: str) -> float:
-    if not answer or not answer.strip():
-        return 0.0
+def _load_cross_encoder():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder(_CROSS_ENCODER_MODEL)
 
-    lowered = answer.lower()
-    if any(marker in lowered for marker in _ERROR_MARKERS):
-        return 0.0
 
+async def _get_cross_encoder():
+    global _cross_encoder
+    if _cross_encoder is None:
+        async with _cross_encoder_lock:
+            if _cross_encoder is None:
+                _cross_encoder = await asyncio.to_thread(_load_cross_encoder)
+    return _cross_encoder
+
+
+def _heuristic_score(query: str, answer: str) -> float:
+    """Dependency-free fallback used only if the CrossEncoder fails to load/run."""
     query_terms = _tokenize(query)
     answer_terms = _tokenize(answer)
     overlap = len(query_terms & answer_terms) / len(query_terms) if query_terms else 0.5
@@ -138,8 +163,39 @@ def score_answer(query: str, answer: str) -> float:
         length_score = 1.0
 
     structure_bonus = 0.1 if ("```" in answer or re.search(r"\n\s*[-*\d]", answer)) else 0.0
-
     return round(0.6 * overlap + 0.3 * length_score + structure_bonus, 4)
+
+
+async def score_answers(query: str, answers: list) -> list:
+    """Rerank candidate answers against the query, returning one score per answer.
+
+    Empty/error answers are zeroed out without spending a model call on them.
+    Valid answers are scored in a single batched CrossEncoder.predict call.
+    """
+    scores = [0.0] * len(answers)
+    valid_idx = []
+    for i, answer in enumerate(answers):
+        if not answer or not answer.strip():
+            continue
+        if any(marker in answer.lower() for marker in _ERROR_MARKERS):
+            continue
+        valid_idx.append(i)
+
+    if not valid_idx:
+        return scores
+
+    try:
+        encoder = await _get_cross_encoder()
+        pairs = [(query, answers[i]) for i in valid_idx]
+        raw_scores = await asyncio.to_thread(encoder.predict, pairs)
+        for i, raw in zip(valid_idx, raw_scores):
+            scores[i] = round(float(raw), 4)
+    except Exception:
+        logger.exception("CrossEncoder scoring failed, falling back to heuristic scorer")
+        for i in valid_idx:
+            scores[i] = _heuristic_score(query, answers[i])
+
+    return scores
 
 
 # --- Groq API Connector ---
@@ -300,8 +356,7 @@ async def chat(req: ChatRequest):
         ask_openrouter(messages),
     )
 
-    groq_score = score_answer(score_query, groq_response)
-    openrouter_score = score_answer(score_query, openrouter_response)
+    groq_score, openrouter_score = await score_answers(score_query, [groq_response, openrouter_response])
 
     def _ok(resp: str) -> bool:
         lowered = (resp or "").lower()
